@@ -29,7 +29,23 @@ var context = canvas.getContext('2d');
 // the canvas width & height, snake x & y, and the apple x & y, all need to be a multiples of the grid size in order for collision detection to work
 // (e.g. 16 * 25 = 400)
 var grid = 16;
-var count = 0;
+
+// --- Speed ramp (difficulty) configuration --------------------------------
+// Movement is time-based: the snake advances one cell every `interval`
+// milliseconds, so the speed is identical on any display refresh rate.
+// As the score climbs the interval shrinks (the snake speeds up), stepping
+// down by SPEED_STEP_MS every SPEED_STEP_POINTS points and clamped so it
+// never drops below SPEED_MIN_INTERVAL. Tune these constants to taste.
+var SPEED_START_INTERVAL = 67; // ms between moves at score 0 (~15 moves/sec, matches original feel)
+var SPEED_MIN_INTERVAL   = 45; // fastest interval allowed (speed cap)
+var SPEED_STEP_MS        = 3;  // ms shaved off the interval per speed-up step
+var SPEED_STEP_POINTS    = 2;  // gain one speed step every N points
+
+// timestamp (ms) of the snake's last move; drives frame-rate-independent timing
+var lastMoveTime = 0;
+
+// number of apples eaten this run; drives both the score display and the speed ramp
+var score = 0;
 
 var snake = {
   x: 160,
@@ -56,16 +72,33 @@ function getRandomInt(min, max) {
   return Math.floor(Math.random() * (max - min)) + min;
 }
 
+// current delay between moves, in ms, derived from the score.
+// stepped ramp: every SPEED_STEP_POINTS points removes SPEED_STEP_MS from the
+// interval, clamped at SPEED_MIN_INTERVAL so the game stays fast but playable.
+function getMoveInterval() {
+  var steps = Math.floor(score / SPEED_STEP_POINTS);
+  return Math.max(SPEED_MIN_INTERVAL, SPEED_START_INTERVAL - steps * SPEED_STEP_MS);
+}
+
 // game loop
-function loop() {
+function loop(currentTime) {
   requestAnimationFrame(loop);
 
-  // slow game loop to 15 fps instead of 60 (60/15 = 4)
-  if (++count < 4) {
+  // time-based movement: advance only when a full move interval has elapsed.
+  // this keeps the snake's speed the same on any display refresh rate (60Hz,
+  // 120Hz, 144Hz, ...). we step the schedule forward by exactly one interval so
+  // the average move rate doesn't drift with the frame rate, and snap forward if
+  // we've fallen far behind (e.g. the tab was backgrounded) so we never burst
+  // several catch-up moves in a single frame.
+  var moveInterval = getMoveInterval();
+  if (currentTime - lastMoveTime < moveInterval) {
     return;
   }
+  lastMoveTime += moveInterval;
+  if (currentTime - lastMoveTime > moveInterval) {
+    lastMoveTime = currentTime;
+  }
 
-  count = 0;
   context.clearRect(0,0,canvas.width,canvas.height);
 
   // move snake by it's velocity
@@ -110,6 +143,7 @@ function loop() {
     // snake ate apple
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
+      score++;
 
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
@@ -128,11 +162,23 @@ function loop() {
         snake.dx = grid;
         snake.dy = 0;
 
+        // reset the score so the speed ramp restarts at the baseline speed
+        score = 0;
+
         apple.x = getRandomInt(0, 25) * grid;
         apple.y = getRandomInt(0, 25) * grid;
       }
     }
   });
+
+  // subtle score / level indicator; level rises with each speed step and stops once the speed cap is hit
+  var maxStep = Math.ceil((SPEED_START_INTERVAL - SPEED_MIN_INTERVAL) / SPEED_STEP_MS);
+  var level = Math.min(Math.floor(score / SPEED_STEP_POINTS), maxStep) + 1;
+  context.fillStyle = 'white';
+  context.font = '12px monospace';
+  context.textAlign = 'left';
+  context.textBaseline = 'top';
+  context.fillText('Score: ' + score + '   Level: ' + level, 6, 6);
 }
 
 // listen to keyboard events to move the snake
