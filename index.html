@@ -18,10 +18,76 @@
   canvas {
     border: 1px solid white;
   }
+
+  /* the canvas and the start screen are stacked inside this fixed-size box */
+  .game-container {
+    position: relative;
+    width: 400px;
+    height: 400px;
+  }
+
+  /* start screen overlay shown on load until the player presses Play */
+  #startScreen {
+    position: absolute;
+    inset: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    padding: 20px;
+    text-align: center;
+    background: rgba(0, 0, 0, 0.85);
+    border: 1px solid white;
+    color: white;
+    font-family: monospace;
+  }
+  #startScreen.hidden {
+    display: none;
+  }
+  #startScreen h1 {
+    margin: 0;
+    color: #2ecc40; /* same green as the snake */
+    font-size: 48px;
+    letter-spacing: 8px;
+  }
+  #playButton {
+    min-width: 160px;
+    min-height: 48px; /* comfortable touch target */
+    padding: 12px 28px;
+    font-family: inherit;
+    font-size: 20px;
+    font-weight: bold;
+    color: black;
+    background: #2ecc40;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #playButton:hover,
+  #playButton:focus {
+    background: #36e04b;
+    outline: 2px solid white;
+  }
+  #startScreen .controls {
+    margin: 0;
+    max-width: 320px;
+    font-size: 14px;
+    line-height: 1.6;
+    color: #e0e0e0;
+  }
   </style>
 </head>
 <body>
-<canvas width="400" height="400" id="game"></canvas>
+<div class="game-container">
+  <canvas width="400" height="400" id="game"></canvas>
+  <div id="startScreen">
+    <h1>SNAKE</h1>
+    <button id="playButton" type="button">Play</button>
+    <p class="controls">Use the <strong>Arrow keys</strong> to move.<br>Press <strong>Enter</strong> / <strong>Space</strong> or tap <strong>Play</strong> to start.</p>
+  </div>
+</div>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
@@ -210,8 +276,46 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// start the game
-requestAnimationFrame(loop);
+// --- Start screen / game gating -------------------------------------------
+// The game waits on a start screen instead of running on page load. The
+// `gameStarted` flag guards startGame() so repeated Play actions (double
+// click, key repeat, button click + keypress) only ever start one game loop.
+var gameStarted = false;
+var startScreen = document.getElementById('startScreen');
+var playButton = document.getElementById('playButton');
+
+function startGame() {
+  if (gameStarted) {
+    return;
+  }
+  gameStarted = true;
+
+  // hide the start screen and kick off the game loop
+  startScreen.classList.add('hidden');
+
+  // reset the move timer so the first step waits a full interval rather than
+  // jumping ahead based on however long the start screen was on screen
+  lastMoveTime = performance.now();
+  requestAnimationFrame(loop);
+}
+
+// start by clicking/tapping the Play button
+playButton.addEventListener('click', startGame);
+
+// start with the keyboard (Enter or Space) while the start screen is showing
+document.addEventListener('keydown', function(e) {
+  if (gameStarted) {
+    return;
+  }
+  // 13 = Enter, 32 = Space; preventDefault stops Space from scrolling the page
+  if (e.which === 13 || e.which === 32) {
+    e.preventDefault();
+    startGame();
+  }
+});
+
+// focus the Play button so Enter/Space work immediately and it's keyboard reachable
+playButton.focus();
 </script>
 </body>
 </html>
