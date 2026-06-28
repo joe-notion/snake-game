@@ -3,6 +3,7 @@
 <head>
   <title>Basic Snake HTML Game</title>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
   html, body {
     height: 100%;
@@ -17,14 +18,105 @@
   }
   canvas {
     border: 1px solid white;
+    display: block;
+  }
+
+  /* the canvas and the start screen share one positioned container so the
+     menu can sit directly on top of the play field without shifting layout */
+  #game-container {
+    position: relative;
+  }
+
+  /* start screen / main menu overlay. covers the canvas while the game is in
+     the `menu` or `gameOver` state and is hidden during play */
+  #start-screen {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+    background: rgba(0, 0, 0, 0.85);
+    color: white;
+    font-family: Arial, Helvetica, sans-serif;
+    text-align: center;
+  }
+  #start-screen[hidden] {
+    display: none;
+  }
+  #start-title {
+    margin: 0;
+    font-size: 40px;
+    letter-spacing: 2px;
+    color: #4ade4a;
+  }
+  #start-message {
+    margin: 0;
+    max-width: 320px;
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  .how-to-play {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    max-width: 320px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #e6e6e6;
+  }
+  .how-to-play strong {
+    color: white;
+  }
+  #play-button {
+    font: inherit;
+    font-size: 18px;
+    font-weight: bold;
+    padding: 10px 32px;
+    color: black;
+    background: #4ade4a;
+    border: 2px solid #4ade4a;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #play-button:hover {
+    background: #6ef06e;
+    border-color: #6ef06e;
+  }
+  /* clearly visible keyboard focus ring for accessibility */
+  #play-button:focus-visible {
+    outline: 3px solid white;
+    outline-offset: 3px;
   }
   </style>
 </head>
 <body>
-<canvas width="400" height="400" id="game"></canvas>
+<div id="game-container">
+  <canvas width="400" height="400" id="game"></canvas>
+  <div id="start-screen" role="dialog" aria-modal="true" aria-labelledby="start-title" aria-describedby="start-message">
+    <h1 id="start-title">Snake</h1>
+    <p id="start-message">Eat apples to grow longer &mdash; just don't crash into your own tail.</p>
+    <ul class="how-to-play">
+      <li><strong>Arrow keys</strong> (&larr; &uarr; &rarr; &darr;) steer the snake</li>
+      <li>Walls wrap around &mdash; you reappear on the opposite side</li>
+      <li>The snake speeds up as your score climbs</li>
+    </ul>
+    <button id="play-button" type="button">Play</button>
+  </div>
+</div>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
+var startScreen = document.getElementById('start-screen');
+var startTitle = document.getElementById('start-title');
+var startMessage = document.getElementById('start-message');
+var playButton = document.getElementById('play-button');
 
 // the canvas width & height, snake x & y, and the apple x & y, all need to be a multiples of the grid size in order for collision detection to work
 // (e.g. 16 * 25 = 400)
@@ -46,6 +138,11 @@ var lastMoveTime = 0;
 
 // number of apples eaten this run; drives both the score display and the speed ramp
 var score = 0;
+
+// explicit game state so the loop never advances before the player presses
+// Play and so Game Over can return to the start screen.
+// one of 'menu' (start screen), 'playing', 'gameOver'
+var gameState = 'menu';
 
 var snake = {
   x: 160,
@@ -80,9 +177,58 @@ function getMoveInterval() {
   return Math.max(SPEED_MIN_INTERVAL, SPEED_START_INTERVAL - steps * SPEED_STEP_MS);
 }
 
+// show the start screen in either its initial 'menu' form or its 'gameOver'
+// form (which recaps the final score and offers a Play again button)
+function showStartScreen(mode) {
+  if (mode === 'gameOver') {
+    startTitle.textContent = 'Game Over';
+    startMessage.textContent = 'Final score: ' + score + '. Want another go?';
+    playButton.textContent = 'Play again';
+  } else {
+    startTitle.textContent = 'Snake';
+    startMessage.innerHTML = "Eat apples to grow longer &mdash; just don't crash into your own tail.";
+    playButton.textContent = 'Play';
+  }
+  startScreen.hidden = false;
+  // auto-focus Play so keyboard players can start with Enter/Space immediately
+  playButton.focus();
+}
+
+// begin a fresh run: reset the snake, apple and score, hide the menu and
+// hand control over to the game loop
+function startGame() {
+  snake.x = 160;
+  snake.y = 160;
+  snake.cells = [];
+  snake.maxCells = 4;
+  snake.dx = grid;
+  snake.dy = 0;
+
+  score = 0;
+
+  apple.x = getRandomInt(0, 25) * grid;
+  apple.y = getRandomInt(0, 25) * grid;
+
+  lastMoveTime = 0;
+  startScreen.hidden = true;
+  gameState = 'playing';
+}
+
+// end the current run and return to the start screen in Game Over mode
+function gameOver() {
+  gameState = 'gameOver';
+  showStartScreen('gameOver');
+}
+
 // game loop
 function loop(currentTime) {
   requestAnimationFrame(loop);
+
+  // do nothing until the player has pressed Play; this keeps the snake frozen
+  // on the start screen and after a game over
+  if (gameState !== 'playing') {
+    return;
+  }
 
   // time-based movement: advance only when a full move interval has elapsed.
   // this keeps the snake's speed the same on any display refresh rate (60Hz,
@@ -153,20 +299,11 @@ function loop(currentTime) {
     // check collision with all cells after this one (modified bubble sort)
     for (var i = index + 1; i < snake.cells.length; i++) {
 
-      // snake occupies same space as a body part. reset game
+      // snake occupies same space as a body part. end the run and show the
+      // Game Over screen so the player can start again without refreshing
       if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
-        snake.x = 160;
-        snake.y = 160;
-        snake.cells = [];
-        snake.maxCells = 4;
-        snake.dx = grid;
-        snake.dy = 0;
-
-        // reset the score so the speed ramp restarts at the baseline speed
-        score = 0;
-
-        apple.x = getRandomInt(0, 25) * grid;
-        apple.y = getRandomInt(0, 25) * grid;
+        gameOver();
+        return;
       }
     }
   });
@@ -183,6 +320,12 @@ function loop(currentTime) {
 
 // listen to keyboard events to move the snake
 document.addEventListener('keydown', function(e) {
+  // ignore steering input unless a game is actually running so arrow keys on
+  // the start / game over screen don't change a hidden snake's direction
+  if (gameState !== 'playing') {
+    return;
+  }
+
   // prevent snake from backtracking on itself by checking that it's
   // not already moving on the same axis (pressing left while moving
   // left won't do anything, and pressing right while moving left
@@ -210,7 +353,12 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// start the game
+// Play / Play again starts a new run. a real <button> means Enter and Space
+// activate it for free when it's focused, so keyboard players are covered.
+playButton.addEventListener('click', startGame);
+
+// show the start screen on load and keep the loop running (it idles until Play)
+showStartScreen('menu');
 requestAnimationFrame(loop);
 </script>
 </body>
