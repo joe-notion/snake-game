@@ -27,6 +27,44 @@
     position: relative;
   }
 
+  /* scoreboard: a compact header bar that sits directly above the canvas
+     (never over it), so the live score is always visible during play without
+     covering the play field or the mobile touch area. it shares the canvas's
+     width and white frame so the two read as one unit. */
+  #scoreboard {
+    box-sizing: border-box;
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 12px;
+    padding: 8px 12px;
+    background: #111;
+    border: 1px solid white;
+    border-bottom: none; /* the canvas's own top border draws the divider */
+    color: white;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 16px;
+    letter-spacing: 1px;
+  }
+  #scoreboard .sb-stat {
+    text-transform: uppercase;
+  }
+  /* the numbers pick up the snake's green so they stand out from the labels */
+  #scoreboard .sb-value {
+    color: #4ade4a;
+    font-weight: bold;
+  }
+  /* smaller screens: trim the type and padding so the bar still fits above
+     the canvas in both portrait and landscape without wrapping */
+  @media (max-width: 420px) {
+    #scoreboard {
+      padding: 6px 8px;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+  }
+
   /* start screen / main menu overlay. covers the canvas while the game is in
      the `menu` or `gameOver` state and is hidden during play */
   #start-screen {
@@ -98,6 +136,10 @@
 </head>
 <body>
 <div id="game-container">
+  <div id="scoreboard" aria-live="polite">
+    <span class="sb-stat">Score <span class="sb-value" id="score-value">0</span></span>
+    <span class="sb-stat">Level <span class="sb-value" id="level-value">1</span></span>
+  </div>
   <canvas width="400" height="400" id="game"></canvas>
   <div id="start-screen" role="dialog" aria-modal="true" aria-labelledby="start-title" aria-describedby="start-message">
     <h1 id="start-title">Snake</h1>
@@ -117,6 +159,8 @@ var startScreen = document.getElementById('start-screen');
 var startTitle = document.getElementById('start-title');
 var startMessage = document.getElementById('start-message');
 var playButton = document.getElementById('play-button');
+var scoreValue = document.getElementById('score-value');
+var levelValue = document.getElementById('level-value');
 
 // the canvas width & height, snake x & y, and the apple x & y, all need to be a multiples of the grid size in order for collision detection to work
 // (e.g. 16 * 25 = 400)
@@ -177,6 +221,21 @@ function getMoveInterval() {
   return Math.max(SPEED_MIN_INTERVAL, SPEED_START_INTERVAL - steps * SPEED_STEP_MS);
 }
 
+// difficulty level shown on the scoreboard: rises one per speed step and stops
+// climbing once the speed cap (SPEED_MIN_INTERVAL) is reached.
+function getLevel() {
+  var maxStep = Math.ceil((SPEED_START_INTERVAL - SPEED_MIN_INTERVAL) / SPEED_STEP_MS);
+  return Math.min(Math.floor(score / SPEED_STEP_POINTS), maxStep) + 1;
+}
+
+// push the current score and level into the on-page scoreboard. called whenever
+// the score changes (a new run, or an apple eaten) so the header bar always
+// matches the live score without drawing over the play field.
+function updateScoreboard() {
+  scoreValue.textContent = score;
+  levelValue.textContent = getLevel();
+}
+
 // show the start screen in either its initial 'menu' form or its 'gameOver'
 // form (which recaps the final score and offers a Play again button)
 function showStartScreen(mode) {
@@ -205,6 +264,7 @@ function startGame() {
   snake.dy = 0;
 
   score = 0;
+  updateScoreboard();
 
   apple.x = getRandomInt(0, 25) * grid;
   apple.y = getRandomInt(0, 25) * grid;
@@ -290,6 +350,9 @@ function loop(currentTime) {
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
       score++;
+      // refresh the scoreboard immediately so the score reflects the apple
+      // the instant it is eaten
+      updateScoreboard();
 
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
@@ -307,15 +370,6 @@ function loop(currentTime) {
       }
     }
   });
-
-  // subtle score / level indicator; level rises with each speed step and stops once the speed cap is hit
-  var maxStep = Math.ceil((SPEED_START_INTERVAL - SPEED_MIN_INTERVAL) / SPEED_STEP_MS);
-  var level = Math.min(Math.floor(score / SPEED_STEP_POINTS), maxStep) + 1;
-  context.fillStyle = 'white';
-  context.font = '12px monospace';
-  context.textAlign = 'left';
-  context.textBaseline = 'top';
-  context.fillText('Score: ' + score + '   Level: ' + level, 6, 6);
 }
 
 // listen to keyboard events to move the snake
@@ -358,6 +412,7 @@ document.addEventListener('keydown', function(e) {
 playButton.addEventListener('click', startGame);
 
 // show the start screen on load and keep the loop running (it idles until Play)
+updateScoreboard();
 showStartScreen('menu');
 requestAnimationFrame(loop);
 </script>
