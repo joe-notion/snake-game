@@ -14,14 +14,117 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   canvas {
     border: 1px solid white;
+    display: block;
+  }
+
+  /* wrapper lets the start screen sit directly on top of the canvas */
+  .game-container {
+    position: relative;
+  }
+
+  /* start screen overlay */
+  #start-screen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    padding: 24px;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.92);
+    color: #ffffff;
+    text-align: center;
+  }
+  /* fully remove the overlay once the game starts so it can't intercept input */
+  #start-screen[hidden] {
+    display: none;
+  }
+  #start-screen h1 {
+    margin: 0;
+    font-size: 42px;
+    letter-spacing: 3px;
+    color: #4caf50;
+  }
+  #start-screen .objective {
+    margin: 0;
+    max-width: 300px;
+    font-size: 15px;
+    line-height: 1.4;
+  }
+  #play-button {
+    font-size: 20px;
+    font-weight: bold;
+    padding: 10px 36px;
+    color: #ffffff;
+    background: #4caf50;
+    border: 2px solid #4caf50;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #play-button:hover {
+    background: #45a047;
+  }
+  /* clear, visible focus indicator for keyboard users */
+  #play-button:focus {
+    outline: 3px solid #ffffff;
+    outline-offset: 3px;
+  }
+  .how-to-play {
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .how-to-play h2 {
+    margin: 0 0 6px;
+    font-size: 13px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #bbbbbb;
+  }
+  .how-to-play ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .how-to-play kbd {
+    display: inline-block;
+    min-width: 14px;
+    padding: 1px 6px;
+    background: #222222;
+    border: 1px solid #555555;
+    border-radius: 4px;
+    font-family: monospace;
+  }
+  .mobile-note {
+    margin: 6px 0 0;
+    font-size: 12px;
+    color: #888888;
   }
   </style>
 </head>
 <body>
-<canvas width="400" height="400" id="game"></canvas>
+<div class="game-container">
+  <canvas width="400" height="400" id="game"></canvas>
+
+  <!-- start screen: shown on load, hidden once the player presses Play -->
+  <div id="start-screen" aria-labelledby="start-title">
+    <h1 id="start-title">Snake</h1>
+    <p class="objective">Eat the red apples to grow longer. Don&rsquo;t crash into your own tail!</p>
+    <button id="play-button" type="button">Play</button>
+    <div class="how-to-play">
+      <h2>How to play</h2>
+      <ul>
+        <li><kbd>&uarr;</kbd> <kbd>&darr;</kbd> <kbd>&larr;</kbd> <kbd>&rarr;</kbd> &nbsp;Arrow keys to move</li>
+      </ul>
+      <p class="mobile-note">Mobile controls coming soon</p>
+    </div>
+  </div>
+</div>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
@@ -30,6 +133,9 @@ var context = canvas.getContext('2d');
 // (e.g. 16 * 25 = 400)
 var grid = 16;
 var count = 0;
+
+// the game waits on the start screen until the player presses Play
+var gameStarted = false;
 
 var snake = {
   x: 160,
@@ -137,6 +243,11 @@ function loop() {
 
 // listen to keyboard events to move the snake
 document.addEventListener('keydown', function(e) {
+  // ignore movement keys until the player has started the game from the start screen
+  if (!gameStarted) {
+    return;
+  }
+
   // prevent snake from backtracking on itself by checking that it's
   // not already moving on the same axis (pressing left while moving
   // left won't do anything, and pressing right while moving left
@@ -164,8 +275,29 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// start the game
-requestAnimationFrame(loop);
+// start screen: begin gameplay only when the player presses Play
+var startScreen = document.getElementById('start-screen');
+var playButton = document.getElementById('play-button');
+
+function startGame() {
+  if (gameStarted) {
+    return;
+  }
+  gameStarted = true;
+
+  // fully hide the overlay so it can no longer intercept clicks or focus
+  startScreen.hidden = true;
+
+  // start the game loop from the normal initial conditions
+  requestAnimationFrame(loop);
+}
+
+// a native <button> fires 'click' for mouse clicks as well as Enter/Space
+// when focused, so this single handler covers all required activation methods
+playButton.addEventListener('click', startGame);
+
+// focus Play on load so keyboard-only players can start with Enter/Space right away
+playButton.focus();
 </script>
 </body>
 </html>
