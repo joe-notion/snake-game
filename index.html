@@ -19,8 +19,9 @@
     border: 1px solid white;
   }
 
-  /* start screen / main menu overlay */
-  #start-screen {
+  /* shared full-screen overlay used by the start screen and game over screen */
+  #start-screen,
+  #game-over-screen {
     position: fixed;
     inset: 0;
     display: flex;
@@ -31,7 +32,8 @@
     background: rgba(0, 0, 0, 0.92);
     z-index: 10;
   }
-  #start-screen.hidden {
+  #start-screen.hidden,
+  #game-over-screen.hidden {
     display: none;
   }
   .menu {
@@ -76,7 +78,29 @@
     font-size: 13px;
     color: #bbbbbb;
   }
-  #play-button {
+  /* game over specifics */
+  #game-over-screen h1 {
+    color: #e53935;
+  }
+  .final-score {
+    margin: 0 0 6px;
+    font-size: 18px;
+  }
+  .final-score .score-value {
+    display: block;
+    margin-top: 4px;
+    font-size: 48px;
+    font-weight: bold;
+    color: #4caf50;
+  }
+  .death-reason {
+    margin: 0 0 24px;
+    font-size: 15px;
+    color: #bbbbbb;
+  }
+  /* buttons */
+  #play-button,
+  #restart-button {
     padding: 14px 44px;
     font-size: 18px;
     font-weight: bold;
@@ -86,10 +110,27 @@
     border-radius: 8px;
     cursor: pointer;
   }
-  #play-button:hover {
+  #play-button:hover,
+  #restart-button:hover {
     background: #5bc75f;
   }
-  #play-button:focus {
+  #menu-button {
+    display: block;
+    margin: 12px auto 0;
+    padding: 10px 28px;
+    font-size: 15px;
+    color: #ffffff;
+    background: transparent;
+    border: 1px solid #666666;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #menu-button:hover {
+    border-color: #999999;
+  }
+  #play-button:focus,
+  #restart-button:focus,
+  #menu-button:focus {
     outline: 3px solid #ffffff;
     outline-offset: 2px;
   }
@@ -110,6 +151,15 @@
     <button type="button" id="play-button">Play</button>
   </div>
 </div>
+<div id="game-over-screen" class="hidden">
+  <div class="menu">
+    <h1>Game Over</h1>
+    <p class="final-score">Final score<span class="score-value" id="final-score">0</span></p>
+    <p class="death-reason" id="death-reason">You crashed into your own tail!</p>
+    <button type="button" id="restart-button">Restart</button>
+    <button type="button" id="menu-button">Back to Menu</button>
+  </div>
+</div>
 <canvas width="400" height="400" id="game"></canvas>
 <script>
 var canvas = document.getElementById('game');
@@ -119,6 +169,14 @@ var context = canvas.getContext('2d');
 // (e.g. 16 * 25 = 400)
 var grid = 16;
 var count = 0;
+
+// number of apples eaten this run; shown on the Game Over screen
+var score = 0;
+
+// explicit game state machine so rendering/input know what to do
+var STATE = { MENU: 'menu', PLAYING: 'playing', GAME_OVER: 'gameover' };
+var state = STATE.MENU;
+var loopStarted = false;
 
 var snake = {
   x: 160,
@@ -148,6 +206,12 @@ function getRandomInt(min, max) {
 // game loop
 function loop() {
   requestAnimationFrame(loop);
+
+  // only advance gameplay while PLAYING. In MENU and GAME_OVER the loop
+  // stops updating so the last frame stays frozen on the board.
+  if (state !== STATE.PLAYING) {
+    return;
+  }
 
   // slow game loop to 15 fps instead of 60 (60/15 = 4)
   if (++count < 4) {
@@ -199,6 +263,7 @@ function loop() {
     // snake ate apple
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
+      score++;
 
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
@@ -208,17 +273,10 @@ function loop() {
     // check collision with all cells after this one (modified bubble sort)
     for (var i = index + 1; i < snake.cells.length; i++) {
 
-      // snake occupies same space as a body part. reset game
+      // snake occupies same space as a body part. end the run and show Game Over
       if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
-        snake.x = 160;
-        snake.y = 160;
-        snake.cells = [];
-        snake.maxCells = 4;
-        snake.dx = grid;
-        snake.dy = 0;
-
-        apple.x = getRandomInt(0, 25) * grid;
-        apple.y = getRandomInt(0, 25) * grid;
+        gameOver('You crashed into your own tail!');
+        return;
       }
     }
   });
@@ -226,8 +284,18 @@ function loop() {
 
 // listen to keyboard events to move the snake
 document.addEventListener('keydown', function(e) {
-  // ignore movement keys until the game has started from the start screen
-  if (!running) {
+  // while Game Over is showing, Enter or Space starts a fresh run and
+  // directional keys must not affect the frozen board
+  if (state === STATE.GAME_OVER) {
+    if (e.which === 13 || e.which === 32) {
+      e.preventDefault();
+      startGame();
+    }
+    return;
+  }
+
+  // ignore movement keys unless actively playing (e.g. on the start screen)
+  if (state !== STATE.PLAYING) {
     return;
   }
 
@@ -258,11 +326,14 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// start screen: the game waits in a "not started" state until Play is pressed
-var running = false;
-var loopStarted = false;
+// start screen / game over screen elements
 var startScreen = document.getElementById('start-screen');
 var playButton = document.getElementById('play-button');
+var gameOverScreen = document.getElementById('game-over-screen');
+var finalScoreEl = document.getElementById('final-score');
+var deathReasonEl = document.getElementById('death-reason');
+var restartButton = document.getElementById('restart-button');
+var menuButton = document.getElementById('menu-button');
 
 // reset all game state back to its initial values
 function resetGame() {
@@ -277,16 +348,40 @@ function resetGame() {
   apple.y = 320;
 
   count = 0;
+  score = 0;
 }
 
-// dismiss the start screen and begin gameplay
+// stop gameplay and show the Game Over screen with the final score
+function gameOver(reason) {
+  // guard so the run only ends once even though we're mid-render loop
+  if (state !== STATE.PLAYING) {
+    return;
+  }
+
+  state = STATE.GAME_OVER;
+  finalScoreEl.textContent = score;
+  deathReasonEl.textContent = reason;
+  gameOverScreen.classList.remove('hidden');
+
+  // focus Restart so keyboard-only players can act immediately
+  restartButton.focus();
+}
+
+// begin a fresh run from either the start screen or the Game Over screen
 function startGame() {
+  // idempotent: ignore repeat triggers (e.g. key + button firing together)
+  if (state === STATE.PLAYING) {
+    return;
+  }
+
   resetGame();
   startScreen.classList.add('hidden');
-  running = true;
+  gameOverScreen.classList.add('hidden');
+  state = STATE.PLAYING;
 
-  // move focus off the button so gameplay keys aren't captured by it
+  // move focus off the buttons so gameplay keys aren't captured by them
   playButton.blur();
+  restartButton.blur();
 
   // only ever kick off a single game loop
   if (!loopStarted) {
@@ -295,8 +390,18 @@ function startGame() {
   }
 }
 
-// Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
+// return from Game Over to the start screen / main menu
+function backToMenu() {
+  state = STATE.MENU;
+  gameOverScreen.classList.add('hidden');
+  startScreen.classList.remove('hidden');
+  playButton.focus();
+}
+
+// buttons are actionable by mouse click and by keyboard (Enter/Space fire a click)
 playButton.addEventListener('click', startGame);
+restartButton.addEventListener('click', startGame);
+menuButton.addEventListener('click', backToMenu);
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
