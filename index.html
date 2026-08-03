@@ -118,7 +118,33 @@ var context = canvas.getContext('2d');
 // the canvas width & height, snake x & y, and the apple x & y, all need to be a multiples of the grid size in order for collision detection to work
 // (e.g. 16 * 25 = 400)
 var grid = 16;
-var count = 0;
+
+// ---- Speed / timing configuration ----
+// Snake movement uses a fixed timestep so the speed is identical on every
+// display, regardless of the monitor's refresh rate (60 / 120 / 144 Hz).
+// Previously the loop skipped a fixed number of animation frames (assuming
+// 60fps), which made the snake run ~2x too fast on high-refresh-rate screens
+// and felt too fast for beginners.
+//
+// INITIAL_TICK_MS is the single canonical starting-speed value: the number of
+// milliseconds between snake moves. Larger = slower / more beginner-friendly.
+var INITIAL_TICK_MS = 150;
+
+// Current milliseconds-per-move. Speed progression is intentionally disabled
+// for the MVP (a single constant speed for the whole session), so this stays
+// equal to INITIAL_TICK_MS. To add progression later, adjust tickMs from a
+// documented rule (e.g. decrease it every N apples eaten).
+var tickMs = INITIAL_TICK_MS;
+
+// timestamp (DOMHighResTimeStamp, ms) of the last snake move; drives the
+// fixed-timestep accumulator in loop().
+var lastMoveTime = 0;
+
+// dev-only instrumentation: enable by adding ?debug=1 to the URL. Logs the
+// effective interval between moves so QA can confirm the tick rate is
+// consistent across browsers/devices. Silent during normal play.
+var DEBUG = /[?&]debug=1(?:&|$)/.test(window.location.search);
+var prevMoveTime = 0;
 
 var snake = {
   x: 160,
@@ -146,15 +172,33 @@ function getRandomInt(min, max) {
 }
 
 // game loop
-function loop() {
+function loop(timestamp) {
   requestAnimationFrame(loop);
 
-  // slow game loop to 15 fps instead of 60 (60/15 = 4)
-  if (++count < 4) {
+  // Fixed timestep: only advance the game once at least tickMs of real time has
+  // elapsed since the last move. This decouples the snake's speed from the
+  // display refresh rate, so it ticks at the same rate on 60/120/144 Hz screens.
+  if (timestamp - lastMoveTime < tickMs) {
     return;
   }
 
-  count = 0;
+  // Advance the marker by exactly one interval so the cadence stays locked to
+  // tickMs (rather than snapping to whole animation frames). If the tab was
+  // backgrounded and we've fallen far behind, resync to now instead of bursting
+  // several moves to "catch up".
+  lastMoveTime += tickMs;
+  if (timestamp - lastMoveTime > tickMs) {
+    lastMoveTime = timestamp;
+  }
+
+  if (DEBUG) {
+    if (prevMoveTime) {
+      console.log('[snake] move interval ' + Math.round(timestamp - prevMoveTime) +
+                  'ms (target ' + tickMs + 'ms)');
+    }
+    prevMoveTime = timestamp;
+  }
+
   context.clearRect(0,0,canvas.width,canvas.height);
 
   // move snake by it's velocity
@@ -276,7 +320,10 @@ function resetGame() {
   apple.x = 320;
   apple.y = 320;
 
-  count = 0;
+  // reset speed back to the initial value and re-arm the fixed-timestep clock
+  tickMs = INITIAL_TICK_MS;
+  lastMoveTime = 0;
+  prevMoveTime = 0;
 }
 
 // dismiss the start screen and begin gameplay
