@@ -3,6 +3,10 @@
 <head>
   <title>Basic Snake HTML Game</title>
   <meta charset="UTF-8">
+  <!-- match the layout to the device width and cover the safe-area (notch) so
+       env(safe-area-inset-*) below has something to work with. user-scalable=no
+       stops accidental pinch-zoom while steering the snake on a phone. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <style>
   html, body {
     height: 100%;
@@ -11,12 +15,91 @@
 
   body {
     background: black;
+    /* the game fills the viewport, so keep the page itself from
+       scrolling/bouncing behind it on mobile. */
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  /* column layout: HUD on top, playfield below, swipe hint at the bottom.
+     centred in the viewport and padded for iOS safe-area insets so nothing
+     hides under a notch or home indicator. dvh (with a vh fallback) tracks the
+     *visible* viewport as mobile browser chrome shows/hides. */
+  #game-area {
+    box-sizing: border-box;
+    width: 100%;
+    height: 100vh;
+    height: 100dvh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: 10px;
+    padding:
+      calc(8px + env(safe-area-inset-top))
+      calc(8px + env(safe-area-inset-right))
+      calc(8px + env(safe-area-inset-bottom))
+      calc(8px + env(safe-area-inset-left));
   }
+
+  #hud {
+    display: flex;
+    gap: 12px;
+    width: min(96vw, 400px);
+  }
+  .hud-button {
+    flex: 1 1 0;
+    /* ~44px minimum tap target for comfortable touch use */
+    min-height: 44px;
+    padding: 10px 16px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 16px;
+    font-weight: bold;
+    color: #000000;
+    background: #4caf50;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    /* remove the 300ms tap delay / avoid double-tap zoom on the buttons */
+    touch-action: manipulation;
+  }
+  .hud-button:hover {
+    background: #5bc75f;
+  }
+  .hud-button:focus {
+    outline: 3px solid #ffffff;
+    outline-offset: 2px;
+  }
+
   canvas {
     border: 1px solid white;
+    /* Keep the internal resolution at 400x400 (the game logic and collision
+       maths assume a 25x25 grid of 16px cells) but scale the *rendered* size to
+       fit the viewport in either orientation. min() takes the tightest of: the
+       page width, the height left over after the HUD/hint, and the native
+       400px so the board never upscales/blurs on desktop. The two pairs give a
+       vh fallback for browsers without dvh support. */
+    width: min(96vw, calc(100vh - 120px), 400px);
+    height: min(96vw, calc(100vh - 120px), 400px);
+    width: min(96vw, calc(100dvh - 120px), 400px);
+    height: min(96vw, calc(100dvh - 120px), 400px);
+    /* treat touches on the board as game input, not page scroll/zoom */
+    touch-action: none;
+  }
+
+  #touch-hint {
+    margin: 0;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 13px;
+    color: #bbbbbb;
+    text-align: center;
+  }
+  /* the swipe hint is only relevant on touch devices; hide it for
+     mouse/keyboard (fine pointer) desktops. */
+  @media (hover: hover) and (pointer: fine) {
+    #touch-hint {
+      display: none;
+    }
   }
 
   /* start screen / main menu overlay */
@@ -30,6 +113,7 @@
     box-sizing: border-box;
     background: rgba(0, 0, 0, 0.92);
     z-index: 10;
+    overflow-y: auto;
   }
   #start-screen.hidden {
     display: none;
@@ -71,11 +155,6 @@
     font-size: 15px;
     line-height: 1.6;
   }
-  .how-to-play .mobile-note {
-    margin: 10px 0 0;
-    font-size: 13px;
-    color: #bbbbbb;
-  }
   #play-button {
     padding: 14px 44px;
     font-size: 18px;
@@ -104,13 +183,20 @@
       <h2>How to play</h2>
       <ul>
         <li><strong>Arrow keys</strong> &mdash; move up, down, left, and right</li>
+        <li><strong>Swipe</strong> on the board &mdash; steer on a touchscreen</li>
       </ul>
-      <p class="mobile-note">Mobile touch controls coming soon.</p>
     </div>
     <button type="button" id="play-button">Play</button>
   </div>
 </div>
-<canvas width="400" height="400" id="game"></canvas>
+<div id="game-area">
+  <div id="hud">
+    <button type="button" id="pause-button" class="hud-button">Pause</button>
+    <button type="button" id="restart-button" class="hud-button">Restart</button>
+  </div>
+  <canvas width="400" height="400" id="game"></canvas>
+  <p id="touch-hint">Swipe on the board to steer</p>
+</div>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
@@ -174,6 +260,13 @@ function getRandomInt(min, max) {
 // game loop
 function loop(timestamp) {
   requestAnimationFrame(loop);
+
+  // when paused, hold the game in place. keep the fixed-timestep clock in sync
+  // with real time so resuming doesn't fire a burst of "catch-up" moves.
+  if (paused) {
+    lastMoveTime = timestamp;
+    return;
+  }
 
   // Fixed timestep: only advance the game once at least tickMs of real time has
   // elapsed since the last move. This decouples the snake's speed from the
@@ -268,45 +361,116 @@ function loop(timestamp) {
   });
 }
 
-// listen to keyboard events to move the snake
-document.addEventListener('keydown', function(e) {
-  // ignore movement keys until the game has started from the start screen
-  if (!running) {
+// Change the snake's heading. Shared by the keyboard, swipe and (future)
+// on-screen controls so the "no 180° reversal" rule lives in one place: a turn
+// onto the axis the snake is already travelling is ignored, which prevents the
+// snake from instantly doubling back into its own neck.
+function changeDirection(dir) {
+  // ignore input until a game is actually running / while it's paused
+  if (!running || paused) {
     return;
   }
 
-  // prevent snake from backtracking on itself by checking that it's
-  // not already moving on the same axis (pressing left while moving
-  // left won't do anything, and pressing right while moving left
-  // shouldn't let you collide with your own body)
-
-  // left arrow key
-  if (e.which === 37 && snake.dx === 0) {
+  if (dir === 'left' && snake.dx === 0) {
     snake.dx = -grid;
     snake.dy = 0;
   }
-  // up arrow key
-  else if (e.which === 38 && snake.dy === 0) {
+  else if (dir === 'up' && snake.dy === 0) {
     snake.dy = -grid;
     snake.dx = 0;
   }
-  // right arrow key
-  else if (e.which === 39 && snake.dx === 0) {
+  else if (dir === 'right' && snake.dx === 0) {
     snake.dx = grid;
     snake.dy = 0;
   }
-  // down arrow key
-  else if (e.which === 40 && snake.dy === 0) {
+  else if (dir === 'down' && snake.dy === 0) {
     snake.dy = grid;
     snake.dx = 0;
   }
+}
+
+// listen to keyboard events to move the snake
+document.addEventListener('keydown', function(e) {
+  // left arrow key
+  if (e.which === 37) {
+    changeDirection('left');
+  }
+  // up arrow key
+  else if (e.which === 38) {
+    changeDirection('up');
+  }
+  // right arrow key
+  else if (e.which === 39) {
+    changeDirection('right');
+  }
+  // down arrow key
+  else if (e.which === 40) {
+    changeDirection('down');
+  }
 });
+
+// ---- Touch steering (swipe) ----
+// Swiping across the board changes direction. We track a moving anchor point
+// and fire a turn as soon as the finger travels past SWIPE_THRESHOLD on the
+// dominant axis, then re-anchor so a single continuous drag can queue several
+// turns. Small jitters below the threshold are ignored so a tap doesn't turn
+// the snake. Reversal protection is handled by changeDirection().
+var SWIPE_THRESHOLD = 24;
+var touchStartX = 0;
+var touchStartY = 0;
+var swiping = false;
+
+canvas.addEventListener('touchstart', function(e) {
+  var touch = e.changedTouches[0];
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+  swiping = true;
+  // stop the browser from scrolling/zooming from a touch on the board
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('touchmove', function(e) {
+  if (!swiping) {
+    return;
+  }
+
+  var touch = e.changedTouches[0];
+  var dx = touch.clientX - touchStartX;
+  var dy = touch.clientY - touchStartY;
+
+  // ignore micro-swipes below the threshold on both axes
+  if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) {
+    e.preventDefault();
+    return;
+  }
+
+  // steer along whichever axis the finger moved furthest on
+  if (Math.abs(dx) > Math.abs(dy)) {
+    changeDirection(dx > 0 ? 'right' : 'left');
+  }
+  else {
+    changeDirection(dy > 0 ? 'down' : 'up');
+  }
+
+  // re-anchor so the next flick within the same drag is measured afresh
+  touchStartX = touch.clientX;
+  touchStartY = touch.clientY;
+  e.preventDefault();
+}, { passive: false });
+
+canvas.addEventListener('touchend', function(e) {
+  swiping = false;
+  e.preventDefault();
+}, { passive: false });
 
 // start screen: the game waits in a "not started" state until Play is pressed
 var running = false;
+var paused = false;
 var loopStarted = false;
 var startScreen = document.getElementById('start-screen');
 var playButton = document.getElementById('play-button');
+var pauseButton = document.getElementById('pause-button');
+var restartButton = document.getElementById('restart-button');
 
 // reset all game state back to its initial values
 function resetGame() {
@@ -326,24 +490,69 @@ function resetGame() {
   prevMoveTime = 0;
 }
 
-// dismiss the start screen and begin gameplay
-function startGame() {
-  resetGame();
-  startScreen.classList.add('hidden');
-  running = true;
-
-  // move focus off the button so gameplay keys aren't captured by it
-  playButton.blur();
-
-  // only ever kick off a single game loop
+// make sure the game loop is running (only ever kicked off once)
+function ensureLoopStarted() {
   if (!loopStarted) {
     loopStarted = true;
     requestAnimationFrame(loop);
   }
 }
 
+// dismiss the start screen and begin gameplay
+function startGame() {
+  resetGame();
+  paused = false;
+  pauseButton.textContent = 'Pause';
+  startScreen.classList.add('hidden');
+  running = true;
+
+  // move focus off the button so gameplay keys aren't captured by it
+  playButton.blur();
+
+  ensureLoopStarted();
+}
+
+// draw a translucent "Paused" overlay over the last rendered frame
+function drawPausedOverlay() {
+  context.fillStyle = 'rgba(0, 0, 0, 0.6)';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#ffffff';
+  context.font = 'bold 28px Arial, Helvetica, sans-serif';
+  context.textAlign = 'center';
+  context.textBaseline = 'middle';
+  context.fillText('Paused', canvas.width / 2, canvas.height / 2);
+}
+
+// pause / resume the game
+function togglePause() {
+  if (!running) {
+    return;
+  }
+  paused = !paused;
+  pauseButton.textContent = paused ? 'Resume' : 'Pause';
+  if (paused) {
+    drawPausedOverlay();
+  }
+  // don't leave keyboard focus on the button, or arrow keys get swallowed
+  pauseButton.blur();
+}
+
+// restart from scratch (usable mid-game, from a paused state, or from the
+// start screen)
+function restartGame() {
+  resetGame();
+  paused = false;
+  pauseButton.textContent = 'Pause';
+  startScreen.classList.add('hidden');
+  running = true;
+  restartButton.blur();
+  ensureLoopStarted();
+}
+
 // Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
 playButton.addEventListener('click', startGame);
+pauseButton.addEventListener('click', togglePause);
+restartButton.addEventListener('click', restartGame);
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
