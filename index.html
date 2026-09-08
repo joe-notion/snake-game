@@ -93,6 +93,55 @@
     outline: 3px solid #ffffff;
     outline-offset: 2px;
   }
+
+  /* difficulty selector (segmented radio group) */
+  .difficulty {
+    margin: 0 0 24px;
+    padding: 0;
+    border: none;
+  }
+  .difficulty legend {
+    width: 100%;
+    margin: 0 0 8px;
+    padding: 0;
+    font-size: 14px;
+    color: #bbbbbb;
+    text-align: center;
+  }
+  .difficulty-options {
+    display: flex;
+    gap: 8px;
+  }
+  /* keep the native radios accessible/focusable but visually hidden */
+  .difficulty-options input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .difficulty-options label {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 15px;
+    text-align: center;
+    color: #ffffff;
+    background: #111111;
+    border: 1px solid #333333;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .difficulty-options label:hover {
+    border-color: #4caf50;
+  }
+  .difficulty-options input:checked + label {
+    color: #000000;
+    font-weight: bold;
+    background: #4caf50;
+    border-color: #4caf50;
+  }
+  .difficulty-options input:focus + label {
+    outline: 3px solid #ffffff;
+    outline-offset: 2px;
+  }
   </style>
 </head>
 <body>
@@ -107,6 +156,17 @@
       </ul>
       <p class="mobile-note">Mobile touch controls coming soon.</p>
     </div>
+    <fieldset class="difficulty">
+      <legend>Difficulty</legend>
+      <div class="difficulty-options">
+        <input type="radio" name="difficulty" id="diff-easy" value="easy">
+        <label for="diff-easy">Easy</label>
+        <input type="radio" name="difficulty" id="diff-medium" value="medium">
+        <label for="diff-medium">Medium</label>
+        <input type="radio" name="difficulty" id="diff-hard" value="hard">
+        <label for="diff-hard">Hard</label>
+      </div>
+    </fieldset>
     <button type="button" id="play-button">Play</button>
   </div>
 </div>
@@ -119,22 +179,60 @@ var context = canvas.getContext('2d');
 // (e.g. 16 * 25 = 400)
 var grid = 16;
 
-// ---- Speed / timing configuration ----
-// Snake movement uses a fixed timestep so the speed is identical on every
-// display, regardless of the monitor's refresh rate (60 / 120 / 144 Hz).
-// Previously the loop skipped a fixed number of animation frames (assuming
-// 60fps), which made the snake run ~2x too fast on high-refresh-rate screens
-// and felt too fast for beginners.
+// ---- Difficulty configuration ----
+// Difficulty is the single source of truth for how a run is paced. Each mode
+// maps to a config object describing the PRD's three tuning levers, expressed
+// in terms of the game's fixed-timestep tick interval (milliseconds per snake
+// move — larger = slower / more forgiving):
+//   startingTickMs         -> "startingSpeed": the tick interval at run start.
+//   accelerationMsPerApple -> "accelerationRate": ms shaved off the interval
+//                             each time an apple is eaten (0 = constant speed).
+//   minTickMs              -> "maxSpeed" cap: the fastest the snake can get, so
+//                             the acceleration curve never reaches an unfair
+//                             extreme.
 //
-// INITIAL_TICK_MS is the single canonical starting-speed value: the number of
-// milliseconds between snake moves. Larger = slower / more beginner-friendly.
-var INITIAL_TICK_MS = 150;
+// Medium is the baseline and is intentionally identical to the previous game:
+// a constant 150ms tick with no acceleration. Easy starts slower and ramps
+// gently but never past the Medium baseline. Hard starts faster and ramps
+// aggressively toward a fast (but capped) top speed.
+var DIFFICULTIES = {
+  easy:   { label: 'Easy',   startingTickMs: 200, accelerationMsPerApple: 4, minTickMs: 150 },
+  medium: { label: 'Medium', startingTickMs: 150, accelerationMsPerApple: 0, minTickMs: 150 },
+  hard:   { label: 'Hard',   startingTickMs: 120, accelerationMsPerApple: 5, minTickMs: 70  }
+};
+var DEFAULT_DIFFICULTY = 'medium';
 
-// Current milliseconds-per-move. Speed progression is intentionally disabled
-// for the MVP (a single constant speed for the whole session), so this stays
-// equal to INITIAL_TICK_MS. To add progression later, adjust tickMs from a
-// documented rule (e.g. decrease it every N apples eaten).
-var tickMs = INITIAL_TICK_MS;
+// localStorage key used to remember the last chosen difficulty across sessions.
+var DIFFICULTY_STORAGE_KEY = 'snake.difficulty';
+
+// load the remembered difficulty (falls back to the default if unset, invalid,
+// or if storage is unavailable, e.g. private-browsing mode).
+function loadDifficulty() {
+  try {
+    var saved = window.localStorage.getItem(DIFFICULTY_STORAGE_KEY);
+    if (saved && DIFFICULTIES[saved]) {
+      return saved;
+    }
+  } catch (e) { /* storage unavailable; fall through to default */ }
+  return DEFAULT_DIFFICULTY;
+}
+
+// persist the chosen difficulty so it becomes the default next session.
+function saveDifficulty(name) {
+  try {
+    window.localStorage.setItem(DIFFICULTY_STORAGE_KEY, name);
+  } catch (e) { /* storage unavailable; selection still persists this session */ }
+}
+
+// the difficulty locked in for the current run and its resolved config object.
+// startGame() re-reads the selector so mode changes only take effect on a new
+// run, never mid-run.
+var difficulty = loadDifficulty();
+var config = DIFFICULTIES[difficulty];
+
+// Current milliseconds-per-move. Starts at the mode's startingTickMs and, for
+// modes with acceleration, decreases toward minTickMs as apples are eaten.
+var tickMs = config.startingTickMs;
 
 // timestamp (DOMHighResTimeStamp, ms) of the last snake move; drives the
 // fixed-timestep accumulator in loop().
@@ -247,6 +345,10 @@ function loop(timestamp) {
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
       apple.y = getRandomInt(0, 25) * grid;
+
+      // apply the difficulty's acceleration curve: speed up a little with each
+      // apple, clamped so we never move faster than the mode's max speed.
+      tickMs = Math.max(config.minTickMs, tickMs - config.accelerationMsPerApple);
     }
 
     // check collision with all cells after this one (modified bubble sort)
@@ -261,11 +363,20 @@ function loop(timestamp) {
         snake.dx = grid;
         snake.dy = 0;
 
+        // fresh run: return to this mode's starting speed
+        tickMs = config.startingTickMs;
+
         apple.x = getRandomInt(0, 25) * grid;
         apple.y = getRandomInt(0, 25) * grid;
       }
     }
   });
+
+  // HUD: show the difficulty locked in for this run (top-left corner)
+  context.fillStyle = '#888888';
+  context.font = '12px Arial, sans-serif';
+  context.textBaseline = 'top';
+  context.fillText(config.label, 6, 6);
 }
 
 // listen to keyboard events to move the snake
@@ -320,14 +431,28 @@ function resetGame() {
   apple.x = 320;
   apple.y = 320;
 
-  // reset speed back to the initial value and re-arm the fixed-timestep clock
-  tickMs = INITIAL_TICK_MS;
+  // reset speed back to this mode's starting value and re-arm the
+  // fixed-timestep clock
+  tickMs = config.startingTickMs;
   lastMoveTime = 0;
   prevMoveTime = 0;
 }
 
+// read the difficulty currently chosen in the start-screen selector, falling
+// back to the default if (somehow) nothing is checked.
+function getSelectedDifficulty() {
+  var checked = document.querySelector('input[name="difficulty"]:checked');
+  return (checked && DIFFICULTIES[checked.value]) ? checked.value : DEFAULT_DIFFICULTY;
+}
+
 // dismiss the start screen and begin gameplay
 function startGame() {
+  // lock in the difficulty selected on the start screen. Selection is only
+  // read here, so switching modes only affects the next run, never mid-run.
+  difficulty = getSelectedDifficulty();
+  config = DIFFICULTIES[difficulty];
+  saveDifficulty(difficulty);
+
   resetGame();
   startScreen.classList.add('hidden');
   running = true;
@@ -344,6 +469,12 @@ function startGame() {
 
 // Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
 playButton.addEventListener('click', startGame);
+
+// reflect the remembered (or default) difficulty in the selector on load
+var initialRadio = document.getElementById('diff-' + difficulty);
+if (initialRadio) {
+  initialRadio.checked = true;
+}
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
