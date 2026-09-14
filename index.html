@@ -93,6 +93,32 @@
     outline: 3px solid #ffffff;
     outline-offset: 2px;
   }
+  /* best score shown on the start screen, near the Play CTA */
+  .menu .high-score {
+    margin: 0 0 16px;
+    font-size: 18px;
+    font-weight: bold;
+    color: #ffd54a;
+  }
+  /* secondary control to clear the saved high score */
+  #reset-high-score {
+    display: inline-block;
+    margin-top: 14px;
+    padding: 8px 18px;
+    font-size: 13px;
+    color: #ffffff;
+    background: transparent;
+    border: 1px solid #555555;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #reset-high-score:hover {
+    border-color: #888888;
+  }
+  #reset-high-score:focus {
+    outline: 2px solid #ffffff;
+    outline-offset: 2px;
+  }
   </style>
 </head>
 <body>
@@ -107,7 +133,11 @@
       </ul>
       <p class="mobile-note">Mobile touch controls coming soon.</p>
     </div>
+    <p class="high-score" id="start-high-score">High score: 0</p>
     <button type="button" id="play-button">Play</button>
+    <div>
+      <button type="button" id="reset-high-score">Reset high score</button>
+    </div>
   </div>
 </div>
 <canvas width="400" height="400" id="game"></canvas>
@@ -164,6 +194,43 @@ var apple = {
   x: 320,
   y: 320
 };
+
+// ---- High score persistence ----
+// A single global best score (number of apples eaten in a run) is saved in the
+// browser's localStorage so it survives page refreshes and browser restarts on
+// the same device/profile. All storage access is wrapped in try/catch so the
+// game keeps running even where storage is unavailable (e.g. private-mode
+// restrictions); in that case persistence simply becomes a no-op.
+var HIGH_SCORE_KEY = 'snake.highScore.v1';
+
+// score for the current run = apples eaten since the run started
+var score = 0;
+
+// read the stored high score, treating anything missing or invalid (null,
+// non-numeric, NaN, negative) as 0.
+function loadHighScore() {
+  try {
+    var stored = parseInt(localStorage.getItem(HIGH_SCORE_KEY), 10);
+    if (isNaN(stored) || !isFinite(stored) || stored < 0) {
+      return 0;
+    }
+    return stored;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// persist the high score; swallow any storage error so gameplay never crashes.
+function saveHighScore(value) {
+  try {
+    localStorage.setItem(HIGH_SCORE_KEY, String(value));
+  } catch (e) {
+    // storage unavailable: persistence is disabled but the game continues
+  }
+}
+
+// best score to beat; loaded once on startup and kept in sync in memory.
+var highScore = loadHighScore();
 
 // get random whole numbers in a specific range
 // @see https://stackoverflow.com/a/1527820/2124254
@@ -243,6 +310,7 @@ function loop(timestamp) {
     // snake ate apple
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
+      score++;
 
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
@@ -254,6 +322,14 @@ function loop(timestamp) {
 
       // snake occupies same space as a body part. reset game
       if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
+        // run over: bank a new best only when this run beat the stored high
+        // score, then update the display immediately (no refresh required).
+        if (score > highScore) {
+          highScore = score;
+          saveHighScore(highScore);
+        }
+        score = 0;
+
         snake.x = 160;
         snake.y = 160;
         snake.cells = [];
@@ -266,6 +342,16 @@ function loop(timestamp) {
       }
     }
   });
+
+  // HUD: draw the current score and best score on top of the board so both
+  // reflect the latest values live, including a new high score from this run.
+  context.fillStyle = 'white';
+  context.font = '14px Arial, Helvetica, sans-serif';
+  context.textBaseline = 'top';
+  context.textAlign = 'left';
+  context.fillText('Score: ' + score, 8, 8);
+  context.textAlign = 'right';
+  context.fillText('High: ' + highScore, canvas.width - 8, 8);
 }
 
 // listen to keyboard events to move the snake
@@ -320,6 +406,9 @@ function resetGame() {
   apple.x = 320;
   apple.y = 320;
 
+  // new run starts with a fresh score
+  score = 0;
+
   // reset speed back to the initial value and re-arm the fixed-timestep clock
   tickMs = INITIAL_TICK_MS;
   lastMoveTime = 0;
@@ -344,6 +433,28 @@ function startGame() {
 
 // Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
 playButton.addEventListener('click', startGame);
+
+// start-screen high score label + reset control
+var startHighScore = document.getElementById('start-high-score');
+var resetButton = document.getElementById('reset-high-score');
+
+// keep the start-screen "High score: X" label in sync with the stored value
+function updateStartHighScore() {
+  startHighScore.textContent = 'High score: ' + highScore;
+}
+updateStartHighScore();
+
+// clear the saved high score (localStorage + in-memory + UI) after a light
+// confirmation so demos can start fresh without an accidental reset.
+resetButton.addEventListener('click', function() {
+  if (!window.confirm('Reset your saved high score to 0?')) {
+    return;
+  }
+  highScore = 0;
+  saveHighScore(0);
+  updateStartHighScore();
+  resetButton.blur();
+});
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
