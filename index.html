@@ -165,10 +165,77 @@ var apple = {
   y: 320
 };
 
+// ---- Bonus / special food configuration ----
+// A time-limited "golden apple" appears occasionally for bonus points. It is
+// visually distinct from the normal apple, awards points only (it does not
+// grow the snake, keeping core gameplay unchanged), and vanishes if it isn't
+// eaten before its timer runs out.
+var APPLE_POINTS = 1;        // points for eating a normal apple
+var GOLDEN_POINTS = 5;       // bonus points for eating the golden apple in time
+var GOLDEN_EVERY = 5;        // spawn a golden apple after every N normal apples
+var GOLDEN_LIFETIME_MS = 6000; // how long the golden apple stays on screen (~6s)
+var GOLDEN_BLINK_MS = 2000;  // starts blinking during its final 2s before expiry
+
+// running score and how many normal apples have been eaten (drives the golden
+// apple's spawn cadence).
+var score = 0;
+var applesEaten = 0;
+
+// the golden apple. `active` is false when there is no golden apple on the
+// board; `expiresAt` is the timestamp (ms) at which it disappears.
+var golden = {
+  x: 0,
+  y: 0,
+  active: false,
+  expiresAt: 0
+};
+
 // get random whole numbers in a specific range
 // @see https://stackoverflow.com/a/1527820/2124254
 function getRandomInt(min, max) {
   return Math.floor(Math.random() * (max - min)) + min;
+}
+
+// pick a random grid cell that is not occupied by the snake or the normal
+// apple. This keeps the golden apple from spawning on top of the player or the
+// existing food (an "invalid tile"). Returns null if no free cell is found.
+function getRandomFreeCell() {
+  // 25x25 grid = 625 cells; a bounded number of attempts is plenty and avoids
+  // any risk of an infinite loop if the board is nearly full.
+  for (var attempt = 0; attempt < 200; attempt++) {
+    var x = getRandomInt(0, 25) * grid;
+    var y = getRandomInt(0, 25) * grid;
+
+    // don't overlap the normal apple
+    if (x === apple.x && y === apple.y) {
+      continue;
+    }
+
+    // don't overlap any part of the snake (cells + the head's current position)
+    var occupied = (snake.x === x && snake.y === y);
+    for (var i = 0; !occupied && i < snake.cells.length; i++) {
+      if (snake.cells[i].x === x && snake.cells[i].y === y) {
+        occupied = true;
+      }
+    }
+
+    if (!occupied) {
+      return {x: x, y: y};
+    }
+  }
+  return null;
+}
+
+// place a fresh golden apple on a valid free tile and arm its expiry timer.
+function spawnGolden(timestamp) {
+  var cell = getRandomFreeCell();
+  if (!cell) {
+    return; // board effectively full; skip this spawn
+  }
+  golden.x = cell.x;
+  golden.y = cell.y;
+  golden.active = true;
+  golden.expiresAt = timestamp + GOLDEN_LIFETIME_MS;
 }
 
 // game loop
@@ -233,6 +300,36 @@ function loop(timestamp) {
   context.fillStyle = 'red';
   context.fillRect(apple.x, apple.y, grid-1, grid-1);
 
+  // expire the golden apple once its lifetime has elapsed (eating it after this
+  // point awards nothing, so bonus points only count when collected in time)
+  if (golden.active && timestamp >= golden.expiresAt) {
+    golden.active = false;
+  }
+
+  // draw the golden (bonus) apple. It is a distinct gold colour with a lighter
+  // inner highlight, and blinks during its final seconds so the player can
+  // clearly see it is about to disappear.
+  if (golden.active) {
+    var remaining = golden.expiresAt - timestamp;
+    var visible = true;
+    if (remaining <= GOLDEN_BLINK_MS) {
+      // toggle roughly every 200ms to produce an obvious warning blink
+      visible = Math.floor(remaining / 200) % 2 === 0;
+    }
+    if (visible) {
+      context.fillStyle = 'gold';
+      context.fillRect(golden.x, golden.y, grid-1, grid-1);
+      context.fillStyle = '#fff3b0';
+      context.fillRect(golden.x + 4, golden.y + 4, grid-9, grid-9);
+    }
+  }
+
+  // draw the score in the top-left corner
+  context.fillStyle = 'white';
+  context.font = '16px Arial';
+  context.textBaseline = 'top';
+  context.fillText('Score: ' + score, 8, 8);
+
   // draw snake one cell at a time
   context.fillStyle = 'green';
   snake.cells.forEach(function(cell, index) {
@@ -243,10 +340,24 @@ function loop(timestamp) {
     // snake ate apple
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
+      score += APPLE_POINTS;
+      applesEaten++;
 
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
       apple.y = getRandomInt(0, 25) * grid;
+
+      // reward the player with a time-limited golden apple every N apples
+      if (!golden.active && applesEaten % GOLDEN_EVERY === 0) {
+        spawnGolden(timestamp);
+      }
+    }
+
+    // snake ate the golden apple while it was still active: award bonus points.
+    // It does not grow the snake, so core gameplay stays the same.
+    if (golden.active && cell.x === golden.x && cell.y === golden.y) {
+      score += GOLDEN_POINTS;
+      golden.active = false;
     }
 
     // check collision with all cells after this one (modified bubble sort)
@@ -263,6 +374,11 @@ function loop(timestamp) {
 
         apple.x = getRandomInt(0, 25) * grid;
         apple.y = getRandomInt(0, 25) * grid;
+
+        // clear bonus-food state so the next life starts fresh
+        score = 0;
+        applesEaten = 0;
+        golden.active = false;
       }
     }
   });
@@ -319,6 +435,11 @@ function resetGame() {
 
   apple.x = 320;
   apple.y = 320;
+
+  // reset bonus-food state
+  score = 0;
+  applesEaten = 0;
+  golden.active = false;
 
   // reset speed back to the initial value and re-arm the fixed-timestep clock
   tickMs = INITIAL_TICK_MS;
