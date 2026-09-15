@@ -93,9 +93,36 @@
     outline: 3px solid #ffffff;
     outline-offset: 2px;
   }
+
+  /* mute / unmute toggle, pinned to the top-right of the viewport so it's
+     reachable from both the start screen and during gameplay */
+  #mute-button {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    z-index: 20;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    font-size: 20px;
+    line-height: 1;
+    color: #ffffff;
+    background: rgba(0, 0, 0, 0.6);
+    border: 1px solid #4caf50;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #mute-button:hover {
+    background: rgba(76, 175, 80, 0.25);
+  }
+  #mute-button:focus {
+    outline: 3px solid #ffffff;
+    outline-offset: 2px;
+  }
   </style>
 </head>
 <body>
+<button type="button" id="mute-button" aria-pressed="false" aria-label="Mute sound">&#128266;</button>
 <div id="start-screen">
   <div class="menu">
     <h1>Snake</h1>
@@ -104,6 +131,7 @@
       <h2>How to play</h2>
       <ul>
         <li><strong>Arrow keys</strong> &mdash; move up, down, left, and right</li>
+        <li><strong>M</strong> or the &#128266; button &mdash; mute / unmute sound</li>
       </ul>
       <p class="mobile-note">Mobile touch controls coming soon.</p>
     </div>
@@ -114,6 +142,134 @@
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
+
+// ---- Audio (Web Audio API, all sounds synthesized) ----
+// Every game sound is generated at runtime with the Web Audio API, so there
+// are no audio files to download and no licensing to worry about. A single
+// master GainNode doubles as the mute switch (gain 0 = muted), giving us one
+// master control for both SFX and music (per the MVP scope).
+//
+// The AudioContext is created lazily on the first user gesture (Play click or
+// mute-button click) so we never trip browser autoplay policies or log
+// autoplay errors on initial load. If the browser has no Web Audio support the
+// game keeps working, just silently.
+var audio = (function () {
+  var STORAGE_KEY = 'snakeMuted';
+  var ctx = null;          // AudioContext, created on first gesture
+  var masterGain = null;   // master volume node; acts as the mute switch
+  var musicTimer = null;   // setInterval handle for the background-music scheduler
+  var musicStep = 0;       // position within the looping melody
+
+  // Sound defaults to ON; we only honour an explicit saved "muted" preference,
+  // so a returning player who muted last time stays muted across reloads.
+  var muted = readStoredMuted();
+
+  // localStorage can throw (private mode, sandboxed iframes); never let a
+  // storage error break the game.
+  function readStoredMuted() {
+    try { return localStorage.getItem(STORAGE_KEY) === '1'; }
+    catch (e) { return false; }
+  }
+  function writeStoredMuted(value) {
+    try { localStorage.setItem(STORAGE_KEY, value ? '1' : '0'); }
+    catch (e) { /* ignore: preference just won't persist */ }
+  }
+
+  // Create the AudioContext + master gain the first time we're allowed to, and
+  // resume it if the browser started it "suspended".
+  function ensureContext() {
+    if (ctx) {
+      if (ctx.state === 'suspended') { ctx.resume(); }
+      return;
+    }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { return; }
+    ctx = new AC();
+    masterGain = ctx.createGain();
+    masterGain.gain.value = muted ? 0 : 1;
+    masterGain.connect(ctx.destination);
+  }
+
+  // Play a single oscillator tone. Used to build every SFX and music note.
+  // A tiny attack/release envelope avoids audible clicks.
+  function tone(opts) {
+    if (!ctx) { return; }
+    var t0 = ctx.currentTime + (opts.delay || 0);
+    var dur = opts.duration;
+    var peak = opts.gain || 0.2;
+
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = opts.type || 'square';
+    osc.frequency.setValueAtTime(opts.freq, t0);
+    if (opts.freqEnd) {
+      osc.frequency.exponentialRampToValueAtTime(opts.freqEnd, t0 + dur);
+    }
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.exponentialRampToValueAtTime(peak, t0 + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+
+    osc.connect(gain);
+    gain.connect(masterGain);
+    osc.start(t0);
+    osc.stop(t0 + dur + 0.02);
+  }
+
+  // Short, bright blip when an apple is eaten (low latency: fires immediately).
+  function eat() {
+    ensureContext();
+    tone({ type: 'square', freq: 520, freqEnd: 880, duration: 0.09, gain: 0.25 });
+  }
+
+  // Distinct descending "you died" stinger on game over.
+  function gameOver() {
+    ensureContext();
+    tone({ type: 'sawtooth', freq: 420, freqEnd: 200, duration: 0.18, gain: 0.28 });
+    tone({ type: 'sawtooth', freq: 200, freqEnd: 90, duration: 0.34, gain: 0.28, delay: 0.16 });
+    // Restart the background loop so a fresh life begins from the top of the
+    // melody rather than mid-phrase.
+    musicStep = 0;
+  }
+
+  // Subtle looping background melody (a low-volume pentatonic arpeggio). The
+  // final 0 is a rest so the loop breathes.
+  var MELODY = [220, 261.63, 329.63, 440, 329.63, 261.63, 220, 0];
+  function startMusic() {
+    ensureContext();
+    if (!ctx || musicTimer) { return; }
+    musicStep = 0;
+    musicTimer = setInterval(function () {
+      var freq = MELODY[musicStep % MELODY.length];
+      musicStep++;
+      if (freq) {
+        tone({ type: 'triangle', freq: freq, duration: 0.22, gain: 0.05 });
+      }
+    }, 260);
+  }
+
+  // Apply a mute state and persist it. Ramps the master gain to avoid a click.
+  function setMuted(next) {
+    muted = next;
+    writeStoredMuted(muted);
+    if (masterGain) {
+      masterGain.gain.setTargetAtTime(muted ? 0 : 1, ctx.currentTime, 0.015);
+    }
+  }
+  function toggleMute() {
+    ensureContext(); // a mute-button click is itself a valid user gesture
+    setMuted(!muted);
+    return muted;
+  }
+
+  return {
+    isMuted: function () { return muted; },
+    ensureContext: ensureContext,
+    eat: eat,
+    gameOver: gameOver,
+    startMusic: startMusic,
+    toggleMute: toggleMute
+  };
+})();
 
 // the canvas width & height, snake x & y, and the apple x & y, all need to be a multiples of the grid size in order for collision detection to work
 // (e.g. 16 * 25 = 400)
@@ -235,6 +391,9 @@ function loop(timestamp) {
 
   // draw snake one cell at a time
   context.fillStyle = 'green';
+  // guard so the game-over sound plays at most once per tick even if several
+  // body cells overlap the head on the same frame
+  var gameOverThisTick = false;
   snake.cells.forEach(function(cell, index) {
 
     // drawing 1 px smaller than the grid creates a grid effect in the snake body so you can see how long it is
@@ -243,6 +402,9 @@ function loop(timestamp) {
     // snake ate apple
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
+
+      // play a short "eat" sound effect (fires once per apple eaten)
+      audio.eat();
 
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
@@ -254,6 +416,12 @@ function loop(timestamp) {
 
       // snake occupies same space as a body part. reset game
       if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
+        // play a distinct game-over sound once for this collision
+        if (!gameOverThisTick) {
+          audio.gameOver();
+          gameOverThisTick = true;
+        }
+
         snake.x = 160;
         snake.y = 160;
         snake.cells = [];
@@ -332,6 +500,12 @@ function startGame() {
   startScreen.classList.add('hidden');
   running = true;
 
+  // clicking Play is a user gesture, so it's safe to start audio here without
+  // tripping browser autoplay restrictions: arm the context and start the
+  // subtle background music (both respect the persisted mute preference)
+  audio.ensureContext();
+  audio.startMusic();
+
   // move focus off the button so gameplay keys aren't captured by it
   playButton.blur();
 
@@ -344,6 +518,33 @@ function startGame() {
 
 // Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
 playButton.addEventListener('click', startGame);
+
+// ---- Mute toggle wiring ----
+var muteButton = document.getElementById('mute-button');
+
+// keep the button's icon + accessibility state in sync with the audio module
+function syncMuteButton() {
+  var muted = audio.isMuted();
+  muteButton.textContent = muted ? '\uD83D\uDD07' : '\uD83D\uDD0A'; // 🔇 / 🔊
+  muteButton.setAttribute('aria-pressed', muted ? 'true' : 'false');
+  muteButton.setAttribute('aria-label', muted ? 'Unmute sound' : 'Mute sound');
+}
+
+muteButton.addEventListener('click', function() {
+  audio.toggleMute();
+  syncMuteButton();
+});
+
+// keyboard shortcut: "M" mutes/unmutes at any time (start screen or in-game)
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'm' || e.key === 'M') {
+    audio.toggleMute();
+    syncMuteButton();
+  }
+});
+
+// reflect any saved mute preference in the button on load
+syncMuteButton();
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
