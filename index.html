@@ -19,8 +19,31 @@
     border: 1px solid white;
   }
 
-  /* start screen / main menu overlay */
-  #start-screen {
+  /* wrapper stacks the scoreboard above the playfield so they never overlap */
+  #game-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+    max-width: 100%;
+    box-sizing: border-box;
+    padding: 12px;
+  }
+
+  /* in-game scoreboard: a top bar shown above the canvas during play */
+  #scoreboard {
+    color: #ffffff;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 22px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    line-height: 1;
+    text-align: center;
+  }
+
+  /* start screen / main menu overlay (shared by the game over screen) */
+  #start-screen,
+  #game-over-screen {
     position: fixed;
     inset: 0;
     display: flex;
@@ -31,7 +54,8 @@
     background: rgba(0, 0, 0, 0.92);
     z-index: 10;
   }
-  #start-screen.hidden {
+  #start-screen.hidden,
+  #game-over-screen.hidden {
     display: none;
   }
   .menu {
@@ -76,7 +100,8 @@
     font-size: 13px;
     color: #bbbbbb;
   }
-  #play-button {
+  #play-button,
+  #play-again-button {
     padding: 14px 44px;
     font-size: 18px;
     font-weight: bold;
@@ -86,12 +111,19 @@
     border-radius: 8px;
     cursor: pointer;
   }
-  #play-button:hover {
+  #play-button:hover,
+  #play-again-button:hover {
     background: #5bc75f;
   }
-  #play-button:focus {
+  #play-button:focus,
+  #play-again-button:focus {
     outline: 3px solid #ffffff;
     outline-offset: 2px;
+  }
+  #game-over-screen .final-score {
+    margin: 0 0 24px;
+    font-size: 22px;
+    font-weight: bold;
   }
   </style>
 </head>
@@ -110,7 +142,17 @@
     <button type="button" id="play-button">Play</button>
   </div>
 </div>
-<canvas width="400" height="400" id="game"></canvas>
+<div id="game-wrap">
+  <div id="scoreboard">Score: <span id="score">0</span></div>
+  <canvas width="400" height="400" id="game"></canvas>
+</div>
+<div id="game-over-screen" class="hidden">
+  <div class="menu">
+    <h1>Game Over</h1>
+    <p class="final-score">Final Score: <span id="final-score">0</span></p>
+    <button type="button" id="play-again-button">Play Again</button>
+  </div>
+</div>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
@@ -165,6 +207,11 @@ var apple = {
   y: 320
 };
 
+// current score for this run. Increments by 1 each time an apple is eaten and
+// resets to 0 when a new game starts. Kept in sync with the scoreboard UI via
+// updateScore() so the displayed value always matches the gameplay value.
+var score = 0;
+
 // get random whole numbers in a specific range
 // @see https://stackoverflow.com/a/1527820/2124254
 function getRandomInt(min, max) {
@@ -174,6 +221,12 @@ function getRandomInt(min, max) {
 // game loop
 function loop(timestamp) {
   requestAnimationFrame(loop);
+
+  // stop advancing the game while it isn't running (e.g. after game over the
+  // board freezes behind the game over screen until Play Again is pressed).
+  if (!running) {
+    return;
+  }
 
   // Fixed timestep: only advance the game once at least tickMs of real time has
   // elapsed since the last move. This decouples the snake's speed from the
@@ -244,6 +297,11 @@ function loop(timestamp) {
     if (cell.x === apple.x && cell.y === apple.y) {
       snake.maxCells++;
 
+      // +1 point per apple; update the scoreboard immediately so the displayed
+      // value always matches the score accrued in gameplay.
+      score++;
+      updateScore();
+
       // canvas is 400x400 which is 25x25 grids
       apple.x = getRandomInt(0, 25) * grid;
       apple.y = getRandomInt(0, 25) * grid;
@@ -252,17 +310,12 @@ function loop(timestamp) {
     // check collision with all cells after this one (modified bubble sort)
     for (var i = index + 1; i < snake.cells.length; i++) {
 
-      // snake occupies same space as a body part. reset game
+      // snake occupies same space as a body part: game over. The board freezes
+      // (see the running guard above) and the final score is shown until the
+      // player restarts, which resets state via startGame() -> resetGame().
       if (cell.x === snake.cells[i].x && cell.y === snake.cells[i].y) {
-        snake.x = 160;
-        snake.y = 160;
-        snake.cells = [];
-        snake.maxCells = 4;
-        snake.dx = grid;
-        snake.dy = 0;
-
-        apple.x = getRandomInt(0, 25) * grid;
-        apple.y = getRandomInt(0, 25) * grid;
+        gameOver();
+        return;
       }
     }
   });
@@ -308,6 +361,25 @@ var loopStarted = false;
 var startScreen = document.getElementById('start-screen');
 var playButton = document.getElementById('play-button');
 
+// scoreboard + game over UI references
+var scoreEl = document.getElementById('score');
+var gameOverScreen = document.getElementById('game-over-screen');
+var finalScoreEl = document.getElementById('final-score');
+var playAgainButton = document.getElementById('play-again-button');
+
+// render the current score into the scoreboard
+function updateScore() {
+  scoreEl.textContent = score;
+}
+
+// end the current run: freeze the board and show the final score
+function gameOver() {
+  running = false;
+  finalScoreEl.textContent = score;
+  gameOverScreen.classList.remove('hidden');
+  playAgainButton.focus();
+}
+
 // reset all game state back to its initial values
 function resetGame() {
   snake.x = 160;
@@ -320,20 +392,26 @@ function resetGame() {
   apple.x = 320;
   apple.y = 320;
 
+  // score starts at 0 for every new game; sync the scoreboard immediately
+  score = 0;
+  updateScore();
+
   // reset speed back to the initial value and re-arm the fixed-timestep clock
   tickMs = INITIAL_TICK_MS;
   lastMoveTime = 0;
   prevMoveTime = 0;
 }
 
-// dismiss the start screen and begin gameplay
+// dismiss the start / game over screens and begin gameplay
 function startGame() {
   resetGame();
   startScreen.classList.add('hidden');
+  gameOverScreen.classList.add('hidden');
   running = true;
 
   // move focus off the button so gameplay keys aren't captured by it
   playButton.blur();
+  playAgainButton.blur();
 
   // only ever kick off a single game loop
   if (!loopStarted) {
@@ -342,8 +420,10 @@ function startGame() {
   }
 }
 
-// Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
+// Play / Play Again are actionable by mouse click and by keyboard (Enter/Space
+// fire a click)
 playButton.addEventListener('click', startGame);
+playAgainButton.addEventListener('click', startGame);
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
