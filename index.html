@@ -93,6 +93,93 @@
     outline: 3px solid #ffffff;
     outline-offset: 2px;
   }
+
+  /* game area wrapper so the pause control + overlay can be positioned
+     relative to the canvas (works the same on desktop and mobile) */
+  #game-wrap {
+    position: relative;
+  }
+  #game-wrap canvas {
+    display: block;
+  }
+
+  /* in-HUD pause / resume control, top-right of the play field */
+  #pause-button {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 5;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 10px 16px;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+    font-weight: bold;
+    line-height: 1;
+    color: #ffffff;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid #4caf50;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #pause-button:hover {
+    background: rgba(76, 175, 80, 0.35);
+  }
+  #pause-button:focus {
+    outline: 3px solid #ffffff;
+    outline-offset: 2px;
+  }
+  #pause-button.hidden {
+    display: none;
+  }
+
+  /* paused overlay: dims the frozen play field and explains how to resume */
+  #pause-screen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 8;
+    cursor: pointer;
+    font-family: Arial, Helvetica, sans-serif;
+    color: #ffffff;
+    text-align: center;
+  }
+  #pause-screen.hidden {
+    display: none;
+  }
+  #pause-screen h2 {
+    margin: 0 0 8px;
+    font-size: 34px;
+    letter-spacing: 2px;
+    color: #4caf50;
+  }
+  #pause-screen .pause-hint {
+    margin: 0 0 20px;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  #resume-button {
+    padding: 12px 36px;
+    font-size: 16px;
+    font-weight: bold;
+    color: #000000;
+    background: #4caf50;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  #resume-button:hover {
+    background: #5bc75f;
+  }
+  #resume-button:focus {
+    outline: 3px solid #ffffff;
+    outline-offset: 2px;
+  }
   </style>
 </head>
 <body>
@@ -104,13 +191,24 @@
       <h2>How to play</h2>
       <ul>
         <li><strong>Arrow keys</strong> &mdash; move up, down, left, and right</li>
+        <li><strong>P</strong> or <strong>Space</strong> &mdash; pause / resume</li>
       </ul>
       <p class="mobile-note">Mobile touch controls coming soon.</p>
     </div>
     <button type="button" id="play-button">Play</button>
   </div>
 </div>
-<canvas width="400" height="400" id="game"></canvas>
+<div id="game-wrap">
+  <canvas width="400" height="400" id="game"></canvas>
+  <button type="button" id="pause-button" class="hidden" aria-label="Pause game" title="Pause (P)">Pause</button>
+  <div id="pause-screen" class="hidden" role="status" aria-live="polite">
+    <div class="pause-content">
+      <h2>Paused</h2>
+      <p class="pause-hint">Press <strong>P</strong> or <strong>Space</strong> to resume<br>(or tap this screen)</p>
+      <button type="button" id="resume-button">Resume</button>
+    </div>
+  </div>
+</div>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
@@ -174,6 +272,13 @@ function getRandomInt(min, max) {
 // game loop
 function loop(timestamp) {
   requestAnimationFrame(loop);
+
+  // While paused, keep the animation-frame chain alive but apply no game
+  // updates: no movement, collision checks, scoring, or apple spawning. The
+  // last frame stays frozen on the canvas with the paused overlay on top.
+  if (paused) {
+    return;
+  }
 
   // Fixed timestep: only advance the game once at least tickMs of real time has
   // elapsed since the last move. This decouples the snake's speed from the
@@ -270,8 +375,24 @@ function loop(timestamp) {
 
 // listen to keyboard events to move the snake
 document.addEventListener('keydown', function(e) {
-  // ignore movement keys until the game has started from the start screen
+  // ignore all gameplay keys until the game has started from the start screen
   if (!running) {
+    return;
+  }
+
+  // pause / resume shortcut: P or Space. Works whether currently paused or
+  // running so it always toggles. preventDefault stops Space from scrolling
+  // the page.
+  if (e.which === 80 || e.which === 32) {
+    e.preventDefault();
+    togglePause();
+    return;
+  }
+
+  // while paused, ignore movement input (resume is handled above) so the
+  // direction can't be changed mid-pause and the resumed run is identical
+  // to the paused state
+  if (paused) {
     return;
   }
 
@@ -305,8 +426,11 @@ document.addEventListener('keydown', function(e) {
 // start screen: the game waits in a "not started" state until Play is pressed
 var running = false;
 var loopStarted = false;
+var paused = false;
 var startScreen = document.getElementById('start-screen');
 var playButton = document.getElementById('play-button');
+var pauseButton = document.getElementById('pause-button');
+var pauseScreen = document.getElementById('pause-screen');
 
 // reset all game state back to its initial values
 function resetGame() {
@@ -332,6 +456,10 @@ function startGame() {
   startScreen.classList.add('hidden');
   running = true;
 
+  // reveal the in-game pause control and make sure we start un-paused
+  pauseButton.classList.remove('hidden');
+  setPaused(false);
+
   // move focus off the button so gameplay keys aren't captured by it
   playButton.blur();
 
@@ -342,8 +470,71 @@ function startGame() {
   }
 }
 
+// ---- Pause / resume ----
+// setPaused is the single source of truth for pause state and is idempotent:
+// calling it with the state we're already in does nothing, so mashing pause or
+// resume (keyboard, button, overlay tap, or auto-pause) can't corrupt the run.
+function setPaused(next) {
+  // pausing only makes sense during an active run
+  if (next && !running) {
+    return;
+  }
+  if (next === paused) {
+    return;
+  }
+
+  paused = next;
+
+  if (paused) {
+    pauseScreen.classList.remove('hidden');
+    pauseButton.textContent = 'Resume';
+    pauseButton.setAttribute('aria-label', 'Resume game');
+    pauseButton.title = 'Resume (P)';
+  } else {
+    pauseScreen.classList.add('hidden');
+    pauseButton.textContent = 'Pause';
+    pauseButton.setAttribute('aria-label', 'Pause game');
+    pauseButton.title = 'Pause (P)';
+
+    // Re-arm the fixed-timestep clock to "now" so the snake waits a full
+    // interval before its next move. This avoids both a speed jump and a burst
+    // of "catch-up" moves after a long (or backgrounded-tab) pause.
+    lastMoveTime = performance.now();
+    prevMoveTime = 0;
+  }
+}
+
+function togglePause() {
+  setPaused(!paused);
+}
+
 // Play is actionable by mouse click and by keyboard (Enter/Space fire a click)
 playButton.addEventListener('click', startGame);
+
+// pause control: clicking/tapping toggles pause, then hands focus back to the
+// game so keyboard play keeps working
+pauseButton.addEventListener('click', function() {
+  togglePause();
+  pauseButton.blur();
+});
+
+// the paused overlay doubles as a large tap-to-resume target (mobile-friendly);
+// the Resume button inside it resumes via the same handler as it bubbles up
+pauseScreen.addEventListener('click', function() {
+  setPaused(false);
+});
+
+// Fairness: auto-pause when the tab becomes hidden or the window loses focus so
+// a run can't advance (or end) while the player is away. We never auto-resume,
+// so the player returns to the paused overlay and resumes deliberately.
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    setPaused(true);
+  }
+});
+window.addEventListener('blur', function() {
+  setPaused(true);
+});
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
