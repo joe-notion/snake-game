@@ -78,6 +78,44 @@
     font-size: 13px;
     color: #bbbbbb;
   }
+  /* mode selection (Classic / Maze) on the start screen */
+  .mode-select {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+    margin: 0 0 10px;
+  }
+  .mode-option {
+    flex: 1;
+    padding: 10px 0;
+    font-size: 15px;
+    font-weight: bold;
+    color: #ffffff;
+    background: #1b1b1b;
+    border: 1px solid #444444;
+    border-radius: 8px;
+    cursor: pointer;
+  }
+  .mode-option:hover {
+    border-color: #777777;
+  }
+  .mode-option.is-active {
+    color: #000000;
+    background: #4caf50;
+    border-color: #4caf50;
+  }
+  .mode-option:focus {
+    outline: 3px solid #ffffff;
+    outline-offset: 2px;
+  }
+  .mode-desc {
+    margin: 0 0 20px;
+    min-height: 1.2em;
+    font-size: 14px;
+    line-height: 1.4;
+    color: #bbbbbb;
+    font-family: Arial, Helvetica, sans-serif;
+  }
   /* game over specifics */
   #game-over-screen h1 {
     color: #e53935;
@@ -148,6 +186,11 @@
       </ul>
       <p class="mobile-note">Mobile touch controls coming soon.</p>
     </div>
+    <div class="mode-select" role="group" aria-label="Choose game mode">
+      <button type="button" class="mode-option is-active" id="mode-classic" aria-pressed="true">Classic</button>
+      <button type="button" class="mode-option" id="mode-maze" aria-pressed="false">Maze</button>
+    </div>
+    <p class="mode-desc" id="mode-desc">Classic: an open board with no internal walls.</p>
     <button type="button" id="play-button">Play</button>
   </div>
 </div>
@@ -161,6 +204,7 @@
   </div>
 </div>
 <canvas width="400" height="400" id="game"></canvas>
+<script src="maze.js"></script>
 <script>
 var canvas = document.getElementById('game');
 var context = canvas.getContext('2d');
@@ -223,10 +267,122 @@ var apple = {
   y: 320
 };
 
+// ---- Maze Mode ----
+// gameMode is the mode for the current run; selectedMode is the menu choice.
+// walls holds the active internal wall cells in PIXEL coords (empty in Classic
+// Mode), and wallSet is a fast "x,y" -> true lookup used by collision checks and
+// apple placement. The layout data + validation live in maze.js (SnakeMaze).
+var gameMode = 'classic';
+var selectedMode = 'classic';
+var walls = [];
+var wallSet = {};
+var MAZE_LAYOUT_ID = 'arena';
+
 // get random whole numbers in a specific range
 // @see https://stackoverflow.com/a/1527820/2124254
 function getRandomInt(min, max) {
   return Math.floor(Math.random() * (max - min)) + min;
+}
+
+// true if the grid cell at these pixel coords is an internal maze wall
+function isWallAt(x, y) {
+  return wallSet[x + ',' + y] === true;
+}
+
+// true if the snake currently occupies the grid cell at these pixel coords
+function snakeOccupies(x, y) {
+  if (snake.x === x && snake.y === y) {
+    return true;
+  }
+  for (var i = 0; i < snake.cells.length; i++) {
+    if (snake.cells[i].x === x && snake.cells[i].y === y) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// place the apple on a random grid cell. Classic Mode keeps the original
+// behaviour exactly. Maze Mode additionally refuses walls and the snake's body
+// so the apple is always reachable and never hidden inside an obstacle.
+function placeApple() {
+  if (walls.length === 0) {
+    apple.x = getRandomInt(0, 25) * grid;
+    apple.y = getRandomInt(0, 25) * grid;
+    return;
+  }
+
+  var x, y, tries = 0;
+  do {
+    x = getRandomInt(0, 25) * grid;
+    y = getRandomInt(0, 25) * grid;
+    tries++;
+  } while (tries < 1000 && (isWallAt(x, y) || snakeOccupies(x, y)));
+  apple.x = x;
+  apple.y = y;
+}
+
+// draw the internal maze walls. Walls are solid, full-cell blocks (no inter-cell
+// gap) with a lighter inset, so they read as continuous barriers that are
+// visually distinct from the gapped snake body and the apple - not relying on
+// colour alone.
+function drawWalls() {
+  for (var i = 0; i < walls.length; i++) {
+    context.fillStyle = '#5a6472';
+    context.fillRect(walls[i].x, walls[i].y, grid, grid);
+    context.fillStyle = '#828d9e';
+    context.fillRect(walls[i].x + 2, walls[i].y + 2, grid - 4, grid - 4);
+  }
+}
+
+// compact HUD badge so Maze Mode is clearly indicated during play
+function drawModeBadge() {
+  context.save();
+  context.font = 'bold 12px Arial, Helvetica, sans-serif';
+  context.textBaseline = 'middle';
+  var label = 'MAZE MODE';
+  var padX = 6;
+  var w = context.measureText(label).width + padX * 2;
+  context.fillStyle = 'rgba(90, 100, 114, 0.85)';
+  context.fillRect(4, 4, w, 20);
+  context.fillStyle = '#ffffff';
+  context.fillText(label, 4 + padX, 15);
+  context.restore();
+}
+
+// configure the active mode for a new run: build + validate the maze walls, or
+// clear them for Classic. An invalid layout is never loaded - we log an
+// actionable developer error and safely fall back to Classic Mode so a run is
+// never silently unfair.
+function applySelectedMode() {
+  gameMode = selectedMode;
+  walls = [];
+  wallSet = {};
+
+  if (gameMode !== 'maze') {
+    return;
+  }
+
+  var cells = SnakeMaze.cellsFor(MAZE_LAYOUT_ID);
+  var result = SnakeMaze.validateLayout(cells);
+  if (!result.ok) {
+    console.error('[maze] layout "' + MAZE_LAYOUT_ID + '" failed validation: ' +
+                  result.reason + ' - falling back to Classic Mode.');
+    gameMode = 'classic';
+    return;
+  }
+
+  walls = cells.map(function (c) {
+    return { x: c.x * grid, y: c.y * grid };
+  });
+  walls.forEach(function (w) {
+    wallSet[w.x + ',' + w.y] = true;
+  });
+
+  if (DEBUG) {
+    console.log('[maze] loaded layout "' + MAZE_LAYOUT_ID + '" with ' +
+                walls.length + ' wall cells, ' + result.openCells + ' open.');
+  }
 }
 
 // game loop
@@ -265,6 +421,9 @@ function loop(timestamp) {
 
   context.clearRect(0,0,canvas.width,canvas.height);
 
+  // draw internal maze walls (no-op in Classic Mode: walls is empty)
+  drawWalls();
+
   // move snake by it's velocity
   snake.x += snake.dx;
   snake.y += snake.dy;
@@ -293,6 +452,13 @@ function loop(timestamp) {
     snake.cells.pop();
   }
 
+  // maze mode: running the head into an internal wall ends the run, using the
+  // same Game Over flow as a self-collision (consistent terminal outcome)
+  if (isWallAt(snake.x, snake.y)) {
+    gameOver('You crashed into a maze wall!');
+    return;
+  }
+
   // draw apple
   context.fillStyle = 'red';
   context.fillRect(apple.x, apple.y, grid-1, grid-1);
@@ -309,9 +475,8 @@ function loop(timestamp) {
       snake.maxCells++;
       score++;
 
-      // canvas is 400x400 which is 25x25 grids
-      apple.x = getRandomInt(0, 25) * grid;
-      apple.y = getRandomInt(0, 25) * grid;
+      // move the apple to a fresh cell (avoids walls + the snake in Maze Mode)
+      placeApple();
     }
 
     // check collision with all cells after this one (modified bubble sort)
@@ -324,6 +489,11 @@ function loop(timestamp) {
       }
     }
   });
+
+  // HUD: keep Maze Mode clearly indicated throughout the run
+  if (gameMode === 'maze') {
+    drawModeBadge();
+  }
 }
 
 // listen to keyboard events to move the snake
@@ -379,6 +549,26 @@ var deathReasonEl = document.getElementById('death-reason');
 var restartButton = document.getElementById('restart-button');
 var menuButton = document.getElementById('menu-button');
 
+// mode selection (start screen)
+var modeClassicBtn = document.getElementById('mode-classic');
+var modeMazeBtn = document.getElementById('mode-maze');
+var modeDescEl = document.getElementById('mode-desc');
+var MODE_DESCRIPTIONS = {
+  classic: 'Classic: an open board with no internal walls.',
+  maze: 'Maze: internal walls block the board \u2014 touching one ends the run.'
+};
+
+// update the chosen mode and reflect it in the menu's toggle + description
+function selectMode(mode) {
+  selectedMode = mode;
+  var isMaze = mode === 'maze';
+  modeMazeBtn.classList.toggle('is-active', isMaze);
+  modeClassicBtn.classList.toggle('is-active', !isMaze);
+  modeMazeBtn.setAttribute('aria-pressed', isMaze ? 'true' : 'false');
+  modeClassicBtn.setAttribute('aria-pressed', isMaze ? 'false' : 'true');
+  modeDescEl.textContent = MODE_DESCRIPTIONS[mode];
+}
+
 // reset all game state back to its initial values
 function resetGame() {
   snake.x = 160;
@@ -421,7 +611,14 @@ function startGame() {
     return;
   }
 
+  // apply the chosen mode (builds + validates maze walls, or clears them) before
+  // resetting, so the fresh run starts in the correct mode
+  applySelectedMode();
   resetGame();
+  // in Maze Mode, make sure the starting apple isn't sitting inside a wall
+  if (gameMode === 'maze') {
+    placeApple();
+  }
   startScreen.classList.add('hidden');
   gameOverScreen.classList.add('hidden');
   state = STATE.PLAYING;
@@ -449,6 +646,8 @@ function backToMenu() {
 playButton.addEventListener('click', startGame);
 restartButton.addEventListener('click', startGame);
 menuButton.addEventListener('click', backToMenu);
+modeClassicBtn.addEventListener('click', function () { selectMode('classic'); });
+modeMazeBtn.addEventListener('click', function () { selectMode('maze'); });
 
 // focus Play on load so keyboard-only players can start immediately
 playButton.focus();
